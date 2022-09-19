@@ -75,6 +75,9 @@ char *auditLog = NULL;
 /* Bitmap of classes selected */
 static int auditLogBitmap = LOG_NONE;
 
+/* Current ExecutorRun nesting level */
+static int    nesting_level = 0;
+
 /*
  * String constants for log classes - used when processing tokens in the
  * pgaudit.log GUC.
@@ -159,6 +162,17 @@ bool auditLogStatement = true;
  * unnecessairly bloated in some environments.
  */
 bool auditLogStatementOnce = false;
+
+/*
+ * GUC variable for pgaudit.log_nested_statements.
+ *
+ * Administrators can choose whether nested statements are logged too, or if
+ * only top level statements are concerned.
+ *
+ * This does not apply to ProcessUtility commands, as nested commands will never
+ * be logged in that case.
+ */
+bool auditLogNested = true;
 
 /*
  * GUC variable for pgaudit.role
@@ -470,6 +484,16 @@ append_valid_csv(StringInfoData *buffer, const char *appendStr)
     /* Else just append */
     else
         appendStringInfoString(buffer, appendStr);
+}
+
+/*
+ * Check if we should log the statement or not
+ */
+static bool
+pgaudit_should_log_stmt()
+{
+    bool result = (!internalStatement) && (nesting_level == 0 || auditLogNested);
+    return result;
 }
 
 /*
@@ -1008,7 +1032,7 @@ log_select_dml(Oid auditOid, List *rangeTabls)
     bool found = false;
 
     /* Do not log if this is an internal statement */
-    if (internalStatement)
+    if (!pgaudit_should_log_stmt())
         return;
 
     foreach(lr, rangeTabls)
@@ -1238,6 +1262,10 @@ log_function_execute(Oid objectId)
     HeapTuple proctup;
     Form_pg_proc proc;
     AuditEventStackItem *stackItem;
+    if (!pgaudit_should_log_stmt())
+    {
+        return;
+    }
 
     /* Get info about the function. */
     proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(objectId));
@@ -1286,9 +1314,12 @@ static ExecutorCheckPerms_hook_type next_ExecutorCheckPerms_hook = NULL;
 static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
 static object_access_hook_type next_object_access_hook = NULL;
 static ExecutorStart_hook_type next_ExecutorStart_hook = NULL;
+static ExecutorEnd_hook_type next_ExecutorFinish_hook = NULL;
 /* The following hook functions are required to get rows */
 static ExecutorRun_hook_type next_ExecutorRun_hook = NULL;
 static ExecutorEnd_hook_type next_ExecutorEnd_hook = NULL;
+
+
 
 /*
  * Hook ExecutorStart to get the query text and basic command type for queries
@@ -1299,12 +1330,10 @@ static void
 pgaudit_ExecutorStart_hook(QueryDesc *queryDesc, int eflags)
 {
     AuditEventStackItem *stackItem = NULL;
-
-    if (!internalStatement)
+    if (pgaudit_should_log_stmt())
     {
         /* Push the audit even onto the stack */
         stackItem = stack_push();
-
         /* Initialize command using queryDesc->operation */
         switch (queryDesc->operation)
         {
@@ -1430,12 +1459,24 @@ pgaudit_ExecutorRun_hook(QueryDesc *queryDesc, ScanDirection direction, uint64 c
     AuditEventStackItem *stackItem = NULL;
 
     /* Call the previous hook or standard function */
-    if (next_ExecutorRun_hook)
-        next_ExecutorRun_hook(queryDesc, direction, count, execute_once);
-    else
-        standard_ExecutorRun(queryDesc, direction, count, execute_once);
+    nesting_level++;
+    PG_TRY();
+    {
+        if (next_ExecutorRun_hook)
+            next_ExecutorRun_hook(queryDesc, direction, count, execute_once);
+        else
+            standard_ExecutorRun(queryDesc, direction, count, execute_once);
 
-    if (auditLogRows && !internalStatement)
+        nesting_level--;
+    }
+    PG_CATCH();
+    {
+        nesting_level--;
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+
+    if (auditLogRows && pgaudit_should_log_stmt())
     {
         /* Find an item from the stack by the query memory context */
         stackItem = stack_find_context(queryDesc->estate->es_query_cxt);
@@ -1455,7 +1496,7 @@ pgaudit_ExecutorEnd_hook(QueryDesc *queryDesc)
     AuditEventStackItem *stackItem = NULL;
     AuditEventStackItem *auditEventStackFull = NULL;
 
-    if (auditLogRows && !internalStatement)
+    if (auditLogRows && pgaudit_should_log_stmt())
     {
         /* Find an item from the stack by the query memory context */
         stackItem = stack_find_context(queryDesc->estate->es_query_cxt);
@@ -1480,6 +1521,30 @@ pgaudit_ExecutorEnd_hook(QueryDesc *queryDesc)
         next_ExecutorEnd_hook(queryDesc);
     else
         standard_ExecutorEnd(queryDesc);
+}
+
+
+/*
+ * Hook ExecutorFinish to keep track of the nesting level.
+ */
+static void
+pgaudit_ExecutorFinish_hook(QueryDesc *queryDesc)
+{
+    nesting_level++;
+    PG_TRY();
+    {
+        if (next_ExecutorFinish_hook)
+            next_ExecutorFinish_hook(queryDesc);
+        else
+            standard_ExecutorFinish(queryDesc);
+        nesting_level--;
+    }
+    PG_CATCH();
+    {
+        nesting_level--;
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
 }
 
 /*
@@ -2174,6 +2239,20 @@ _PG_init(void)
         GUC_NOT_IN_SAMPLE,
         NULL, NULL, NULL);
 
+    /* Define pgaudit.log_nested_statements */
+    DefineCustomBoolVariable(
+        "pgaudit.log_nested_statements",
+
+        "Specifies whether logging will occur for nested statements or for "
+        "top-level statements only.",
+
+        NULL,
+        &auditLogNested,
+        true,
+        PGC_SUSET,
+        GUC_NOT_IN_SAMPLE,
+        NULL, NULL, NULL);
+
     /*
      * Install our hook functions after saving the existing pointers to
      * preserve the chains.
@@ -2196,6 +2275,9 @@ _PG_init(void)
 
     next_ExecutorEnd_hook = ExecutorEnd_hook;
     ExecutorEnd_hook = pgaudit_ExecutorEnd_hook;
+
+    next_ExecutorFinish_hook = ExecutorFinish_hook;
+    ExecutorFinish_hook = pgaudit_ExecutorFinish_hook;
 
     /* Log that the extension has completed initialization */
 #ifndef EXEC_BACKEND
