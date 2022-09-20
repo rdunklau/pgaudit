@@ -175,6 +175,15 @@ bool auditLogStatementOnce = false;
 bool auditLogNested = true;
 
 /*
+ * GUC variable for pgaudit.log_max_string_length
+ *
+ * Administrators can choose to truncate statement and parameter values when
+ * they are too long.
+ * Defaults to -1, which disables parameter truncation.
+ */
+int auditLogMaxStringLength;
+
+/*
  * GUC variable for pgaudit.role
  *
  * Administrators can choose which role to base OBJECT auditing off of.
@@ -448,6 +457,72 @@ stack_find_context(MemoryContext findContext)
     }
 
     return nextItem;
+}
+
+/*
+ * Crops a char* to be at most maxlen size, by replacing the extraneous
+ * middle character by an ellipis.
+ *
+ * Returns a newly palloc'ed string
+ */
+static char*
+crop_string_to_size(const char *string, const int maxlen)
+{
+    char * result;
+    int lower_len, upper_len;
+    int len = strlen(string);
+    const char* ellipsis = "...";
+    int ellipsis_len = 3;
+    int i = 1;
+    int current_encoding = GetDatabaseEncoding();
+    if (maxlen <= ellipsis_len)
+    {
+        /* Return a newly allocated empty string */
+        result = palloc0(sizeof(char));
+        return result;
+    }
+    if (len <= maxlen)
+    {
+        result = palloc(sizeof(char) * len + 1);
+        strncpy(result, string, len + 1);
+        return result;
+    }
+    result = palloc(sizeof(char) * maxlen + 1);
+    /*
+     * This may be rounded towards zero, so add one to the upper_len
+     * to effectively round it up if needed.
+     */
+    lower_len = (maxlen - ellipsis_len) / 2 * sizeof(char);
+    upper_len = (maxlen - ellipsis_len + 1) / 2;
+    /*
+     * Detect the char boundary around lower_len, by keeping the max valid
+     * string.
+     */
+    lower_len = pg_wchar_table[current_encoding].mbverifystr((const unsigned char*) string, lower_len);
+    memcpy(result, string, lower_len);
+    /* Append the ellipsis */
+    memcpy(result + lower_len, ellipsis, ellipsis_len);
+    /*
+     * Detect the char boundary around upper_len.
+     * We do this by checking if the first char is valid, and advancing to the
+     * next byte if not.
+     * If we don't find a valid char after checking the maximum length of a char
+     * in the encoding, remove the whole end of the string instead of
+     * throwing an error. But this should never happen.
+     */
+    while (i <= pg_wchar_table[current_encoding].maxmblen)
+    {
+        if (pg_wchar_table[current_encoding].mbverifychar((const unsigned char*)string + (len - upper_len), upper_len) != -1)
+            break;
+        upper_len = upper_len - i;
+    }
+    if (i == pg_wchar_table[current_encoding].maxmblen)
+        upper_len = 0;
+    else
+        memcpy(result + lower_len + ellipsis_len, string + (len - upper_len), upper_len);
+    /* Add a NULL terminator */
+    result[lower_len + ellipsis_len + upper_len] = 0;
+    return result;
 }
 
 /*
@@ -734,7 +809,16 @@ log_audit_event(AuditEventStackItem *stackItem)
     appendStringInfoCharMacro(&auditStr, ',');
     if (auditLogStatement && !(stackItem->auditEvent.statementLogged && auditLogStatementOnce))
     {
-        append_valid_csv(&auditStr, stackItem->auditEvent.commandText);
+
+        if (auditLogMaxStringLength > -1 &&
+            strlen(stackItem->auditEvent.commandText) > auditLogMaxStringLength)
+        {
+            char * commandText = crop_string_to_size(stackItem->auditEvent.commandText, auditLogMaxStringLength);
+            append_valid_csv(&auditStr, commandText);
+            pfree(commandText);
+        } else {
+            append_valid_csv(&auditStr, stackItem->auditEvent.commandText);
+        }
 
         appendStringInfoCharMacro(&auditStr, ',');
 
@@ -770,8 +854,15 @@ log_audit_event(AuditEventStackItem *stackItem)
 
                 /* Output the string */
                 getTypeOutputInfo(prm->ptype, &typeOutput, &typeIsVarLena);
-                paramStr = OidOutputFunctionCall(typeOutput, prm->value);
 
+                paramStr = OidOutputFunctionCall(typeOutput, prm->value);
+                /* Truncate the parameter value if needed. */
+                if (auditLogMaxStringLength != -1)
+                {
+                    char *previous_paramStr = paramStr;
+                    paramStr = crop_string_to_size(paramStr, auditLogMaxStringLength);
+                    pfree(previous_paramStr);
+                }
                 append_valid_csv(&paramStrResult, paramStr);
                 pfree(paramStr);
             }
@@ -2249,6 +2340,22 @@ _PG_init(void)
         NULL,
         &auditLogNested,
         true,
+        PGC_SUSET,
+        GUC_NOT_IN_SAMPLE,
+        NULL, NULL, NULL);
+
+    /* Define pgaudit.log_max_string_length*/
+    DefineCustomIntVariable(
+        "pgaudit.log_max_string_length",
+
+        "Crop parameters representation and whole statements if they exceed this threshold."
+        "A (default) value of -1 disable the truncation.",
+
+        NULL,
+        &auditLogMaxStringLength,
+        -1,
+        /* Keep the same max as pgstat_track_activity_query_size, even though -1 meaens unbounded */
+        -1, 102400,
         PGC_SUSET,
         GUC_NOT_IN_SAMPLE,
         NULL, NULL, NULL);
