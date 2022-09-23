@@ -501,6 +501,21 @@ EXECUTE pgclassstmt (1);
 DEALLOCATE pgclassstmt;
 
 --
+-- Test statement and parameters truncation.
+SELECT octet_length('éééééééééééééééééééééééééé');
+set pgaudit.log_max_string_length = 49;
+SELECT octet_length('éééééééééééééééééééééééééé');
+set pgaudit.log_max_string_length = 50;
+SELECT octet_length('éééééééééééééééééééééééééé');
+set pgaudit.log_max_string_length = 51;
+SELECT octet_length('éééééééééééééééééééééééééé');
+PREPARE s1 AS SELECT octet_length($1);
+EXECUTE s1(repeat('a', 2000));
+DEALLOCATE s1;
+
+RESET pgaudit.log_max_string_length;
+
+--
 -- Test cursor
 BEGIN;
 
@@ -1628,3 +1643,4 @@ DROP USER user1;
 DROP ROLE auditor;
 
 RESET client_min_messages;
+
