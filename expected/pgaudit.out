@@ -1099,14 +1099,52 @@ BEGIN;
     CLOSE _ret2;
 END;
 --
--- Test that frees a memory context earlier than expected
+-- Test logging only top-level statements
+CREATE OR REPLACE FUNCTION recursive_add(a int, b int) RETURNS int as $$
+DECLARE
+  rv int;
+BEGIN
+  IF b <= 0 THEN
+    rv := a;
+  ELSE
+    rv := recursive_add(a, b-1);
+  END IF;
+  RETURN rv;
+END
+$$ language plpgsql
+;
 SET pgaudit.log = 'ALL';
 NOTICE:  AUDIT: SESSION,67,1,MISC,SET,,,SET pgaudit.log = 'ALL';,<none>
+SELECT recursive_add(1, 2);
+NOTICE:  AUDIT: SESSION,68,1,READ,SELECT,,,"SELECT recursive_add(1, 2);",<none>
+NOTICE:  AUDIT: SESSION,68,2,FUNCTION,EXECUTE,FUNCTION,public.recursive_add,"SELECT recursive_add(1, 2);",<none>
+NOTICE:  AUDIT: SESSION,68,3,FUNCTION,EXECUTE,FUNCTION,public.recursive_add,"SELECT recursive_add(1, 2);",<none>
+NOTICE:  AUDIT: SESSION,68,4,READ,SELECT,,,"SELECT recursive_add(a, b-1)","1,1,,"
+NOTICE:  AUDIT: SESSION,68,5,FUNCTION,EXECUTE,FUNCTION,public.recursive_add,"SELECT recursive_add(a, b-1)",<none>
+ recursive_add 
+---------------
+             1
+(1 row)
+
+SET pgaudit.log_nested_statements = off;
+NOTICE:  AUDIT: SESSION,69,1,MISC,SET,,,SET pgaudit.log_nested_statements = off;,<none>
+SELECT recursive_add(1, 2);
+NOTICE:  AUDIT: SESSION,70,1,READ,SELECT,,,"SELECT recursive_add(1, 2);",<none>
+NOTICE:  AUDIT: SESSION,70,2,FUNCTION,EXECUTE,FUNCTION,public.recursive_add,"SELECT recursive_add(1, 2);",<none>
+ recursive_add 
+---------------
+             1
+(1 row)
+
+RESET pgaudit.log_nested_statements;
+NOTICE:  AUDIT: SESSION,71,1,MISC,RESET,,,RESET pgaudit.log_nested_statements;,<none>
+--
+-- Test that frees a memory context earlier than expected
 CREATE TABLE hoge
 (
 	id int
 );
-NOTICE:  AUDIT: SESSION,68,1,DDL,CREATE TABLE,TABLE,public.hoge,"CREATE TABLE hoge
+NOTICE:  AUDIT: SESSION,72,1,DDL,CREATE TABLE,TABLE,public.hoge,"CREATE TABLE hoge
 (
 	id int
 );",<none>
@@ -1121,7 +1159,7 @@ BEGIN
 	RETURN tmp;
 END $$
 LANGUAGE plpgsql ;
-NOTICE:  AUDIT: SESSION,69,1,DDL,CREATE FUNCTION,FUNCTION,public.test(),"CREATE FUNCTION test()
+NOTICE:  AUDIT: SESSION,73,1,DDL,CREATE FUNCTION,FUNCTION,public.test(),"CREATE FUNCTION test()
 	RETURNS INT AS $$
 DECLARE
 	cur1 cursor for select * from hoge;
@@ -1133,9 +1171,9 @@ BEGIN
 END $$
 LANGUAGE plpgsql ;",<none>
 SELECT test();
-NOTICE:  AUDIT: SESSION,70,1,READ,SELECT,,,SELECT test();,<none>
-NOTICE:  AUDIT: SESSION,70,2,FUNCTION,EXECUTE,FUNCTION,public.test,SELECT test();,<none>
-NOTICE:  AUDIT: SESSION,70,3,READ,SELECT,TABLE,public.hoge,select * from hoge,<none>
+NOTICE:  AUDIT: SESSION,74,1,READ,SELECT,,,SELECT test();,<none>
+NOTICE:  AUDIT: SESSION,74,2,FUNCTION,EXECUTE,FUNCTION,public.test,SELECT test();,<none>
+NOTICE:  AUDIT: SESSION,74,3,READ,SELECT,TABLE,public.hoge,select * from hoge,<none>
  test 
 ------
      
@@ -1154,29 +1192,29 @@ grant delete
    to auditor;
 insert into bar (col)
 		 values (1);
-NOTICE:  AUDIT: SESSION,71,1,WRITE,INSERT,TABLE,public.bar,"insert into bar (col)
+NOTICE:  AUDIT: SESSION,75,1,WRITE,INSERT,TABLE,public.bar,"insert into bar (col)
 		 values (1);",<none>
 delete from bar;
-NOTICE:  AUDIT: OBJECT,72,1,WRITE,DELETE,TABLE,public.bar,delete from bar;,<none>
-NOTICE:  AUDIT: SESSION,72,1,WRITE,DELETE,TABLE,public.bar,delete from bar;,<none>
+NOTICE:  AUDIT: OBJECT,76,1,WRITE,DELETE,TABLE,public.bar,delete from bar;,<none>
+NOTICE:  AUDIT: SESSION,76,1,WRITE,DELETE,TABLE,public.bar,delete from bar;,<none>
 insert into bar (col)
 		 values (1);
-NOTICE:  AUDIT: SESSION,73,1,WRITE,INSERT,TABLE,public.bar,"insert into bar (col)
+NOTICE:  AUDIT: SESSION,77,1,WRITE,INSERT,TABLE,public.bar,"insert into bar (col)
 		 values (1);",<none>
 delete from bar
  where col = 1;
-NOTICE:  AUDIT: OBJECT,74,1,WRITE,DELETE,TABLE,public.bar,"delete from bar
+NOTICE:  AUDIT: OBJECT,78,1,WRITE,DELETE,TABLE,public.bar,"delete from bar
  where col = 1;",<none>
-NOTICE:  AUDIT: SESSION,74,1,WRITE,DELETE,TABLE,public.bar,"delete from bar
+NOTICE:  AUDIT: SESSION,78,1,WRITE,DELETE,TABLE,public.bar,"delete from bar
  where col = 1;",<none>
 drop table bar;
 --
 -- Grant roles to each other
 SET pgaudit.log = 'role';
 GRANT user1 TO user2;
-NOTICE:  AUDIT: SESSION,75,1,ROLE,GRANT ROLE,,,GRANT user1 TO user2;,<none>
+NOTICE:  AUDIT: SESSION,79,1,ROLE,GRANT ROLE,,,GRANT user1 TO user2;,<none>
 REVOKE user1 FROM user2;
-NOTICE:  AUDIT: SESSION,76,1,ROLE,REVOKE ROLE,,,REVOKE user1 FROM user2;,<none>
+NOTICE:  AUDIT: SESSION,80,1,ROLE,REVOKE ROLE,,,REVOKE user1 FROM user2;,<none>
 --
 -- Test that FK references do not log but triggers still do
 SET pgaudit.log = 'READ,WRITE';
@@ -1206,16 +1244,16 @@ GRANT UPDATE
    ON bbb
    TO auditor;
 INSERT INTO aaa VALUES (generate_series(1,100));
-NOTICE:  AUDIT: SESSION,77,1,WRITE,INSERT,TABLE,public.aaa,"INSERT INTO aaa VALUES (generate_series(1,100));",<none>
+NOTICE:  AUDIT: SESSION,81,1,WRITE,INSERT,TABLE,public.aaa,"INSERT INTO aaa VALUES (generate_series(1,100));",<none>
 SET pgaudit.log_parameter TO OFF;
 INSERT INTO bbb VALUES (1);
-NOTICE:  AUDIT: SESSION,78,1,WRITE,INSERT,TABLE,public.bbb,INSERT INTO bbb VALUES (1);,<not logged>
-NOTICE:  AUDIT: OBJECT,78,2,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
-NOTICE:  AUDIT: SESSION,78,2,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
-NOTICE:  AUDIT: OBJECT,78,3,WRITE,UPDATE,TABLE,public.bbb,UPDATE bbb set id = new.id + 1,<not logged>
-NOTICE:  AUDIT: SESSION,78,3,WRITE,UPDATE,TABLE,public.bbb,UPDATE bbb set id = new.id + 1,<not logged>
-NOTICE:  AUDIT: OBJECT,78,4,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
-NOTICE:  AUDIT: SESSION,78,4,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
+NOTICE:  AUDIT: SESSION,82,1,WRITE,INSERT,TABLE,public.bbb,INSERT INTO bbb VALUES (1);,<not logged>
+NOTICE:  AUDIT: OBJECT,82,2,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
+NOTICE:  AUDIT: SESSION,82,2,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
+NOTICE:  AUDIT: OBJECT,82,3,WRITE,UPDATE,TABLE,public.bbb,UPDATE bbb set id = new.id + 1,<not logged>
+NOTICE:  AUDIT: SESSION,82,3,WRITE,UPDATE,TABLE,public.bbb,UPDATE bbb set id = new.id + 1,<not logged>
+NOTICE:  AUDIT: OBJECT,82,4,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
+NOTICE:  AUDIT: SESSION,82,4,READ,SELECT,TABLE,public.aaa,"SELECT 1 FROM ONLY ""public"".""aaa"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",<not logged>
 SET pgaudit.log_parameter TO ON;
 DROP TABLE bbb;
 DROP TABLE aaa;
@@ -1223,117 +1261,117 @@ DROP TABLE aaa;
 DROP EXTENSION pgaudit;
 CREATE TABLE tmp (id int, data text);
 CREATE TABLE tmp2 AS (SELECT * FROM tmp);
-NOTICE:  AUDIT: SESSION,79,1,READ,SELECT,TABLE,public.tmp,CREATE TABLE tmp2 AS (SELECT * FROM tmp);,<none>
-NOTICE:  AUDIT: SESSION,79,1,WRITE,INSERT,TABLE,public.tmp2,CREATE TABLE tmp2 AS (SELECT * FROM tmp);,<none>
+NOTICE:  AUDIT: SESSION,83,1,READ,SELECT,TABLE,public.tmp,CREATE TABLE tmp2 AS (SELECT * FROM tmp);,<none>
+NOTICE:  AUDIT: SESSION,83,1,WRITE,INSERT,TABLE,public.tmp2,CREATE TABLE tmp2 AS (SELECT * FROM tmp);,<none>
 DROP TABLE tmp;
 DROP TABLE tmp2;
 --
 -- Test MISC
 SET pgaudit.log = 'MISC';
-NOTICE:  AUDIT: SESSION,80,1,MISC,SET,,,SET pgaudit.log = 'MISC';,<none>
+NOTICE:  AUDIT: SESSION,84,1,MISC,SET,,,SET pgaudit.log = 'MISC';,<none>
 SET pgaudit.log_level = 'notice';
-NOTICE:  AUDIT: SESSION,81,1,MISC,SET,,,SET pgaudit.log_level = 'notice';,<none>
+NOTICE:  AUDIT: SESSION,85,1,MISC,SET,,,SET pgaudit.log_level = 'notice';,<none>
 SET pgaudit.log_client = ON;
-NOTICE:  AUDIT: SESSION,82,1,MISC,SET,,,SET pgaudit.log_client = ON;,<none>
+NOTICE:  AUDIT: SESSION,86,1,MISC,SET,,,SET pgaudit.log_client = ON;,<none>
 SET pgaudit.log_relation = ON;
-NOTICE:  AUDIT: SESSION,83,1,MISC,SET,,,SET pgaudit.log_relation = ON;,<none>
+NOTICE:  AUDIT: SESSION,87,1,MISC,SET,,,SET pgaudit.log_relation = ON;,<none>
 SET pgaudit.log_parameter = ON;
-NOTICE:  AUDIT: SESSION,84,1,MISC,SET,,,SET pgaudit.log_parameter = ON;,<none>
+NOTICE:  AUDIT: SESSION,88,1,MISC,SET,,,SET pgaudit.log_parameter = ON;,<none>
 CREATE ROLE alice;
 SET ROLE alice;
-NOTICE:  AUDIT: SESSION,85,1,MISC,SET,,,SET ROLE alice;,<none>
+NOTICE:  AUDIT: SESSION,89,1,MISC,SET,,,SET ROLE alice;,<none>
 CREATE TABLE t (a int, b text);
 SET search_path TO test, public;
-NOTICE:  AUDIT: SESSION,86,1,MISC,SET,,,"SET search_path TO test, public;",<none>
+NOTICE:  AUDIT: SESSION,90,1,MISC,SET,,,"SET search_path TO test, public;",<none>
 INSERT INTO t VALUES (1, 'misc');
 VACUUM t;
-NOTICE:  AUDIT: SESSION,87,1,MISC,VACUUM,,,VACUUM t;,<none>
-RESET ROLE;
-NOTICE:  AUDIT: SESSION,88,1,MISC,RESET,,,RESET ROLE;,<none>
---
--- Test MISC_SET
-SET pgaudit.log = 'MISC_SET';
-NOTICE:  AUDIT: SESSION,89,1,MISC,SET,,,SET pgaudit.log = 'MISC_SET';,<none>
-SET ROLE alice;
-NOTICE:  AUDIT: SESSION,90,1,MISC,SET,,,SET ROLE alice;,<none>
-SET search_path TO public;
-NOTICE:  AUDIT: SESSION,91,1,MISC,SET,,,SET search_path TO public;,<none>
-INSERT INTO t VALUES (2, 'misc_set');
-VACUUM t;
+NOTICE:  AUDIT: SESSION,91,1,MISC,VACUUM,,,VACUUM t;,<none>
 RESET ROLE;
 NOTICE:  AUDIT: SESSION,92,1,MISC,RESET,,,RESET ROLE;,<none>
 --
--- Test ALL, -MISC, MISC_SET
-SET pgaudit.log = 'ALL, -MISC, MISC_SET';
-NOTICE:  AUDIT: SESSION,93,1,MISC,SET,,,"SET pgaudit.log = 'ALL, -MISC, MISC_SET';",<none>
+-- Test MISC_SET
+SET pgaudit.log = 'MISC_SET';
+NOTICE:  AUDIT: SESSION,93,1,MISC,SET,,,SET pgaudit.log = 'MISC_SET';,<none>
+SET ROLE alice;
+NOTICE:  AUDIT: SESSION,94,1,MISC,SET,,,SET ROLE alice;,<none>
 SET search_path TO public;
-NOTICE:  AUDIT: SESSION,94,1,MISC,SET,,,SET search_path TO public;,<none>
-INSERT INTO t VALUES (3, 'all, -misc, misc_set');
-NOTICE:  AUDIT: SESSION,95,1,WRITE,INSERT,TABLE,public.t,"INSERT INTO t VALUES (3, 'all, -misc, misc_set');",<none>
+NOTICE:  AUDIT: SESSION,95,1,MISC,SET,,,SET search_path TO public;,<none>
+INSERT INTO t VALUES (2, 'misc_set');
 VACUUM t;
 RESET ROLE;
 NOTICE:  AUDIT: SESSION,96,1,MISC,RESET,,,RESET ROLE;,<none>
+--
+-- Test ALL, -MISC, MISC_SET
+SET pgaudit.log = 'ALL, -MISC, MISC_SET';
+NOTICE:  AUDIT: SESSION,97,1,MISC,SET,,,"SET pgaudit.log = 'ALL, -MISC, MISC_SET';",<none>
+SET search_path TO public;
+NOTICE:  AUDIT: SESSION,98,1,MISC,SET,,,SET search_path TO public;,<none>
+INSERT INTO t VALUES (3, 'all, -misc, misc_set');
+NOTICE:  AUDIT: SESSION,99,1,WRITE,INSERT,TABLE,public.t,"INSERT INTO t VALUES (3, 'all, -misc, misc_set');",<none>
+VACUUM t;
+RESET ROLE;
+NOTICE:  AUDIT: SESSION,100,1,MISC,RESET,,,RESET ROLE;,<none>
 DROP TABLE public.t;
-NOTICE:  AUDIT: SESSION,97,1,DDL,DROP TABLE,,,DROP TABLE public.t;,<none>
+NOTICE:  AUDIT: SESSION,101,1,DDL,DROP TABLE,,,DROP TABLE public.t;,<none>
 DROP ROLE alice;
-NOTICE:  AUDIT: SESSION,98,1,ROLE,DROP ROLE,,,DROP ROLE alice;,<none>
+NOTICE:  AUDIT: SESSION,102,1,ROLE,DROP ROLE,,,DROP ROLE alice;,<none>
 --
 -- Test PARTITIONED table
 CREATE TABLE h(x int ,y int) PARTITION BY HASH(x);
-NOTICE:  AUDIT: SESSION,99,1,DDL,CREATE TABLE,,,"CREATE TABLE h(x int ,y int) PARTITION BY HASH(x);",<none>
+NOTICE:  AUDIT: SESSION,103,1,DDL,CREATE TABLE,,,"CREATE TABLE h(x int ,y int) PARTITION BY HASH(x);",<none>
 CREATE TABLE h_0 partition OF h FOR VALUES WITH ( MODULUS 2, REMAINDER 0);
-NOTICE:  AUDIT: SESSION,100,1,DDL,CREATE TABLE,,,"CREATE TABLE h_0 partition OF h FOR VALUES WITH ( MODULUS 2, REMAINDER 0);",<none>
+NOTICE:  AUDIT: SESSION,104,1,DDL,CREATE TABLE,,,"CREATE TABLE h_0 partition OF h FOR VALUES WITH ( MODULUS 2, REMAINDER 0);",<none>
 CREATE TABLE h_1 partition OF h FOR VALUES WITH ( MODULUS 2, REMAINDER 1);
-NOTICE:  AUDIT: SESSION,101,1,DDL,CREATE TABLE,,,"CREATE TABLE h_1 partition OF h FOR VALUES WITH ( MODULUS 2, REMAINDER 1);",<none>
+NOTICE:  AUDIT: SESSION,105,1,DDL,CREATE TABLE,,,"CREATE TABLE h_1 partition OF h FOR VALUES WITH ( MODULUS 2, REMAINDER 1);",<none>
 INSERT INTO h VALUES(1,1);
-NOTICE:  AUDIT: SESSION,102,1,WRITE,INSERT,TABLE,public.h,"INSERT INTO h VALUES(1,1);",<none>
+NOTICE:  AUDIT: SESSION,106,1,WRITE,INSERT,TABLE,public.h,"INSERT INTO h VALUES(1,1);",<none>
 SELECT * FROM h;
-NOTICE:  AUDIT: SESSION,103,1,READ,SELECT,TABLE,public.h,SELECT * FROM h;,<none>
+NOTICE:  AUDIT: SESSION,107,1,READ,SELECT,TABLE,public.h,SELECT * FROM h;,<none>
  x | y 
 ---+---
  1 | 1
 (1 row)
 
 SELECT * FROM h_0;
-NOTICE:  AUDIT: SESSION,104,1,READ,SELECT,TABLE,public.h_0,SELECT * FROM h_0;,<none>
+NOTICE:  AUDIT: SESSION,108,1,READ,SELECT,TABLE,public.h_0,SELECT * FROM h_0;,<none>
  x | y 
 ---+---
  1 | 1
 (1 row)
 
 CREATE INDEX h_idx ON h (x);
-NOTICE:  AUDIT: SESSION,105,1,DDL,CREATE INDEX,,,CREATE INDEX h_idx ON h (x);,<none>
+NOTICE:  AUDIT: SESSION,109,1,DDL,CREATE INDEX,,,CREATE INDEX h_idx ON h (x);,<none>
 DROP INDEX h_idx;
-NOTICE:  AUDIT: SESSION,106,1,DDL,DROP INDEX,,,DROP INDEX h_idx;,<none>
+NOTICE:  AUDIT: SESSION,110,1,DDL,DROP INDEX,,,DROP INDEX h_idx;,<none>
 DROP TABLE h;
-NOTICE:  AUDIT: SESSION,107,1,DDL,DROP TABLE,,,DROP TABLE h;,<none>
+NOTICE:  AUDIT: SESSION,111,1,DDL,DROP TABLE,,,DROP TABLE h;,<none>
 --
 -- Test that pgaudit event triggers are immune to search-path-based attacks
 -- Attempt to capture unqualified references to standard functions
 CREATE FUNCTION upper(text) RETURNS text
 LANGUAGE SQL AS 'SELECT (1/0)::text';
-NOTICE:  AUDIT: SESSION,108,1,DDL,CREATE FUNCTION,,,"CREATE FUNCTION upper(text) RETURNS text
+NOTICE:  AUDIT: SESSION,112,1,DDL,CREATE FUNCTION,,,"CREATE FUNCTION upper(text) RETURNS text
 LANGUAGE SQL AS 'SELECT (1/0)::text';",<none>
 CREATE FUNCTION lower(text) RETURNS text
 LANGUAGE SQL AS 'SELECT (1/0)::text';
-NOTICE:  AUDIT: SESSION,109,1,DDL,CREATE FUNCTION,,,"CREATE FUNCTION lower(text) RETURNS text
+NOTICE:  AUDIT: SESSION,113,1,DDL,CREATE FUNCTION,,,"CREATE FUNCTION lower(text) RETURNS text
 LANGUAGE SQL AS 'SELECT (1/0)::text';",<none>
 CREATE FUNCTION my_ne(text, text) RETURNS bool
 LANGUAGE SQL AS 'SELECT (1/0)::bool';
-NOTICE:  AUDIT: SESSION,110,1,DDL,CREATE FUNCTION,,,"CREATE FUNCTION my_ne(text, text) RETURNS bool
+NOTICE:  AUDIT: SESSION,114,1,DDL,CREATE FUNCTION,,,"CREATE FUNCTION my_ne(text, text) RETURNS bool
 LANGUAGE SQL AS 'SELECT (1/0)::bool';",<none>
 CREATE OPERATOR <> (FUNCTION = my_ne, LEFTARG = text, RIGHTARG = text);
-NOTICE:  AUDIT: SESSION,111,1,DDL,CREATE OPERATOR,,,"CREATE OPERATOR <> (FUNCTION = my_ne, LEFTARG = text, RIGHTARG = text);",<none>
+NOTICE:  AUDIT: SESSION,115,1,DDL,CREATE OPERATOR,,,"CREATE OPERATOR <> (FUNCTION = my_ne, LEFTARG = text, RIGHTARG = text);",<none>
 CREATE EXTENSION IF NOT EXISTS pgaudit;
-NOTICE:  AUDIT: SESSION,112,1,DDL,CREATE EXTENSION,,,CREATE EXTENSION IF NOT EXISTS pgaudit;,<none>
+NOTICE:  AUDIT: SESSION,116,1,DDL,CREATE EXTENSION,,,CREATE EXTENSION IF NOT EXISTS pgaudit;,<none>
 SET pgaudit.log = 'DDL';
 -- Put public schema before pg_catalog to capture unqualified references
 SET search_path = public, pg_catalog;
 -- If there was a vulnerability, these would fail with division by zero error
 CREATE TABLE wombat ();
-NOTICE:  AUDIT: SESSION,113,1,DDL,CREATE TABLE,TABLE,public.wombat,CREATE TABLE wombat ();,<none>
+NOTICE:  AUDIT: SESSION,117,1,DDL,CREATE TABLE,TABLE,public.wombat,CREATE TABLE wombat ();,<none>
 DROP TABLE wombat;
-NOTICE:  AUDIT: SESSION,114,1,DDL,DROP TABLE,TABLE,public.wombat,DROP TABLE wombat;,<none>
+NOTICE:  AUDIT: SESSION,118,1,DDL,DROP TABLE,TABLE,public.wombat,DROP TABLE wombat;,<none>
 SET pgaudit.log = 'NONE';
 DROP EXTENSION pgaudit;
 DROP OPERATOR <> (text, text);
@@ -1345,12 +1383,12 @@ DROP FUNCTION upper(text);
 SET pgaudit.log = 'all,-misc_set';
 SET pgaudit.log_level = 'warning';
 CREATE EXTENSION pg_stat_statements;
-WARNING:  AUDIT: SESSION,115,1,DDL,CREATE EXTENSION,,,CREATE EXTENSION pg_stat_statements;,<none>
+WARNING:  AUDIT: SESSION,119,1,DDL,CREATE EXTENSION,,,CREATE EXTENSION pg_stat_statements;,<none>
 ALTER EXTENSION pg_stat_statements UPDATE TO '1.8';
-WARNING:  AUDIT: SESSION,116,1,DDL,ALTER EXTENSION,,,ALTER EXTENSION pg_stat_statements UPDATE TO '1.8';,<none>
+WARNING:  AUDIT: SESSION,120,1,DDL,ALTER EXTENSION,,,ALTER EXTENSION pg_stat_statements UPDATE TO '1.8';,<none>
 NOTICE:  version "1.8" of extension "pg_stat_statements" is already installed
 DROP EXTENSION pg_stat_statements;
-WARNING:  AUDIT: SESSION,117,1,DDL,DROP EXTENSION,,,DROP EXTENSION pg_stat_statements;,<none>
+WARNING:  AUDIT: SESSION,121,1,DDL,DROP EXTENSION,,,DROP EXTENSION pg_stat_statements;,<none>
 SET pgaudit.log_level = 'notice';
 -- Cleanup
 -- Set client_min_messages up to warning to avoid noise

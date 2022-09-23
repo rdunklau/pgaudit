@@ -712,8 +712,29 @@ BEGIN;
 END;
 
 --
--- Test that frees a memory context earlier than expected
+-- Test logging only top-level statements
+CREATE OR REPLACE FUNCTION recursive_add(a int, b int) RETURNS int as $$
+DECLARE
+  rv int;
+BEGIN
+  IF b <= 0 THEN
+    rv := a;
+  ELSE
+    rv := recursive_add(a, b-1);
+  END IF;
+  RETURN rv;
+END
+$$ language plpgsql
+;
+
 SET pgaudit.log = 'ALL';
+SELECT recursive_add(1, 2);
+SET pgaudit.log_nested_statements = off;
+SELECT recursive_add(1, 2);
+RESET pgaudit.log_nested_statements;
+
+--
+-- Test that frees a memory context earlier than expected
 
 CREATE TABLE hoge
 (
